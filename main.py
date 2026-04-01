@@ -2,6 +2,9 @@ from fasthtml.common import *
 import asyncio
 from myapps.circare import *
 from uuid import uuid4
+import markdown
+import time
+
 
 #from myapps.circare import 
 
@@ -12,7 +15,7 @@ app, rt = fast_app(live = True)
 
 #jobs = {job_id : "uuid", {query : "The keywords for job", status : "Queued/Processing/Complete", status_messages : [list of comments], report : "None/Full report"}}
 
-jobs = {}
+from myapps.jobs import jobs
 
 PRIMARY = "#1a73e8"
 TEXT = "#202124"
@@ -157,11 +160,15 @@ def shell(*children, title="Circare"):
         Body(*children),
     )
 
+
+
+
 # -----------------------------
 # Views
 # -----------------------------
 @rt("/circare")
 def circare():
+    current_job_id = str(uuid4())
     return shell(
         Main(
             Div("Circare", cls="brand"),
@@ -181,8 +188,8 @@ def circare():
                     Button("Circare Search & Write Report", cls="btn", type="submit"),
                     cls="search-actions",
                 ),
-                action="/circare-search",
-                method="get",
+                action=f"/circare-search/{current_job_id}",
+                method="post",
                 cls="search-form",
             ),
             P(
@@ -194,10 +201,46 @@ def circare():
         title="Circare",
     )
 
-
-@rt("/circare-search")
-def search_page(q: str = ""):
+@rt("/circare-search/{current_job_id}")
+def search_page(current_job_id : str, q: str = ""):
     q = q.strip()
+    is_allowed, reason = evaluate_query_safety(q)
+
+    if current_job_id not in jobs:
+        jobs[current_job_id] = {
+            "query": q,
+            "status": "Queued",
+            "status_messages": [],
+            "report": "None",
+            "task_started": False,
+            "start_time": None,
+        }
+        if not is_allowed:
+            jobs[current_job_id]["status"] = "Complete"
+            jobs[current_job_id]["task_started"] = True
+            jobs[current_job_id]["status_messages"] = [reason]
+            jobs[current_job_id]["report"] = ReportData(
+                short_summary=reason,
+                markdown_report=(
+                    "## Request blocked\n\n"
+                    "This query cannot be processed due to safety policy.\n\n"
+                    "Please ask a legal, non-harmful, and non-explicit topic."
+                ),
+                follow_up_questions=[
+                    "What topics are safe to research online?",
+                    "How can I research controversial topics responsibly?",
+                    "How do I evaluate source quality and bias?",
+                ],
+            )
+    elif q:
+        # Keep original job unless a non-empty query is explicitly resubmitted.
+        jobs[current_job_id]["query"] = q
+    current_query = jobs[current_job_id]["query"]
+    
+    #Status = Queued/Processing/Complete
+    #Status_messages
+    #report == None/Full report
+    
     return shell(
         Main(
             Div(
@@ -210,7 +253,7 @@ def search_page(q: str = ""):
                 Div(
                     Div(Div(cls="spinner"), Span("Loading and processing results..."), cls="loader"),
                     id="results-container",
-                    hx_get=f"/results_fragment?q={q}",
+                    hx_get=f"/results_fragment?current_job_id={current_job_id}",
                     hx_trigger="load",
                     hx_target="#results-container",
                     hx_swap="innerHTML",
@@ -219,14 +262,88 @@ def search_page(q: str = ""):
             ),
             cls="results-page",
         ),
-        title=f"{q} - Circare" if q else "Circare results",
+        title=f"{current_query} - Circare" if current_query else "Circare results",
     )
 
 @rt("/results_fragment")
-async def result_fragment(q : str):
-    query = q
-    result = await circare_main(to_search = query)
-    return shell(Div(P(result)))
+async def result_fragment(current_job_id : str):
+    if current_job_id not in jobs:
+        return Div(P("This job no longer exists. Please start a new search."), cls="container")
+
+    if jobs[current_job_id]["status"] == "Complete":
+        report_data = jobs[current_job_id]["report"]
+        report_text = report_data.markdown_report if hasattr(report_data, "markdown_report") else str(report_data)
+        report_html = markdown.markdown(report_text, extensions=["extra", "tables"])
+        return Div(
+            NotStr(report_html),
+            cls="container",
+        )
+    else:
+        if not jobs[current_job_id]["task_started"]:
+            jobs[current_job_id]["start_time"] = time.perf_counter()
+            asyncio.create_task(circare_main(current_job_id=current_job_id))
+            jobs[current_job_id]["task_started"] = True
+
+    return Div(
+        Div(Div(cls="spinner"), Span("Loading and processing results..."), cls="loader"),
+        id="status-panel",
+        hx_get=f"/status_checker?current_job_id={current_job_id}",
+        hx_trigger="load, every 1s",
+        hx_target="this",
+        hx_swap="outerHTML",
+    )
+    
+    
+@rt("/status_checker")
+async def status_checker(current_job_id: str):    
+    if current_job_id not in jobs:
+        return Div(P("This job no longer exists. Please start a new search."), cls="container")
+
+    if jobs[current_job_id]['status'] == "Complete":
+        report_data = jobs[current_job_id]["report"]
+        report_text = report_data.markdown_report if hasattr(report_data, "markdown_report") else str(report_data)
+        report_html = markdown.markdown(report_text, extensions=["extra", "tables"])
+        return Div(
+            NotStr(report_html),
+            cls="container",
+        )
+
+        
+    else:
+        current_status_messages = jobs[current_job_id]['status_messages']
+        start_time = jobs[current_job_id].get("start_time")
+        if start_time is None:
+            time_elapsed = 0.0
+        else:
+            time_elapsed = time.perf_counter() - start_time
+
+        
+        status_list_items = []
+        for current_message in current_status_messages:
+            list_item = Li(
+                current_message,
+                cls = "server-message"
+            )
+            status_list_items.append(list_item)
+        current_messages_list = Ul(
+            *status_list_items,
+            cls = "status-list-itms"
+        )
+
+        page_content = Div(
+            H2("Job Updates"),
+            P("Following is the continuously updating state of the submitted job."),
+            current_messages_list,
+            P(f"""Elapsed time: {time_elapsed:.2f} seconds"""),
+            id="status-panel",
+            hx_get=f"/status_checker?current_job_id={current_job_id}",
+            hx_trigger="every 1s",
+            hx_target="this",
+            hx_swap="outerHTML",
+            cls="container",
+        )
+        return page_content
+        
 
 
 serve()

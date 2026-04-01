@@ -5,6 +5,13 @@ from dotenv import load_dotenv, find_dotenv
 import asyncio
 import os
 from datetime import datetime
+from uuid import uuid4
+import re
+
+
+
+
+from myapps.jobs import jobs
 
 load_dotenv(override = True)
 os.environ["OPENAI_API_KEY"] = os.getenv("OPENAI_API_KEY")
@@ -20,8 +27,22 @@ class WebSearchPlan(BaseModel):
 async def search_planner(query : str):
     """ It plans the  search by finding a number of relevant keywords or terms along with reasons. """
     NUMBER_OF_SEARCHES = 3
-    INSTRUCTIONS = f""" You  are a search planner who takes query and identifies {NUMBER_OF_SEARCHES} of terms relevant to query. \
-        You come up with the queries along with reasoning why do you think those terms are relevant. While writing reasoning, be concise and write one liners."""
+    INSTRUCTIONS = f"""You are a search planning assistant.
+
+        Task:
+        - Read the user's research topic.
+        - Generate exactly {NUMBER_OF_SEARCHES} web search queries that best cover the topic.
+        - For each query, provide a short one-line reason.
+
+        Output rules:
+        - Return only data that matches the required schema (WebSearchPlan).
+        - Keep query text specific and high-signal.
+        - Avoid duplicates and near-duplicates.
+
+        Safety policy:
+        - Do not generate or optimize search queries for harmful, illegal, exploitative, abusive, or explicit sexual content.
+        - Do not assist with instructions for wrongdoing, evasion, weaponization, malware, fraud, or privacy invasion.
+        - If the request appears unsafe, pivot to safe, high-level, educational alternatives in the same schema (neutral framing, prevention, legality, ethics, risk awareness)."""
     query = query
     planner_agent = Agent(name = "Planner_Agent", model = "gpt-4o-mini", instructions = INSTRUCTIONS, output_type= WebSearchPlan)
     
@@ -33,11 +54,21 @@ async def search_planner(query : str):
 
 async def search(query_reason : WebSearchItem):
     """ It is used for searching the information on the query provided. """
-    INSTRUCTIONS = "You are a research assistant. Given a search term, you search the web for that term and \
-        produce a concise summary of the results. The summary must 2-3 paragraphs and less than 300 \
-        words. Capture the main points. Write succintly, no need to have complete sentences or good \
-        grammar. This will be consumed by someone synthesizing a report, so it's vital you capture the \
-        essence and ignore any fluff. Do not include any additional commentary other than the summary itself."
+    INSTRUCTIONS = """You are a research assistant.
+
+        Task:
+        - Given a search query and reason, produce a concise factual summary of likely results.
+        - Write 2-3 short paragraphs, maximum 300 words total.
+
+        Writing rules:
+        - Focus on major facts, trends, and key entities.
+        - Remove fluff, repetition, and opinionated language.
+        - Do not include meta commentary, disclaimers, or process notes.
+
+        Safety policy:
+        - Refuse to provide content that enables harmful, illegal, exploitative, abusive, or explicit sexual activity.
+        - Do not provide procedural instructions, tactics, or operational details for wrongdoing.
+        - For unsafe intent, provide a brief safe alternative summary focused on prevention, legal context, ethics, or public safety."""
 
     message = f""" Query to be searched is : {query_reason.query} \n The reason of the query is : {query_reason.reason} """
     search_agent = Agent(name="Search_Agent", model = "gpt-4o-mini", instructions = INSTRUCTIONS)
@@ -67,28 +98,120 @@ class ReportData(BaseModel):
     markdown_report: str = Field(description="The final report")
     follow_up_questions: list[str] = Field(description="Suggested topics to research further")
 
+
+SAFETY_BLOCKLIST = {
+    "sexual_explicit": [
+        r"\bporn\b",
+        r"\bpornography\b",
+        r"\bexplicit sexual\b",
+        r"\bsex video\b",
+        r"\badult video\b",
+    ],
+    "child_exploitation": [
+        r"\bchild sexual\b",
+        r"\bminor sexual\b",
+        r"\bcsam\b",
+    ],
+    "violent_wrongdoing": [
+        r"\bhow to make a bomb\b",
+        r"\bbuild a bomb\b",
+        r"\bimprovised explosive\b",
+        r"\bpoison (someone|a person)\b",
+    ],
+    "cybercrime": [
+        r"\bmalware\b",
+        r"\bransomware\b",
+        r"\bphishing\b",
+        r"\bhack (a|an|the)?\b",
+        r"\bcredential stuffing\b",
+    ],
+    "fraud": [
+        r"\bcredit card fraud\b",
+        r"\bidentity theft\b",
+        r"\bforge (id|passport|license)\b",
+    ],
+}
+
+
+def evaluate_query_safety(query: str) -> tuple[bool, str]:
+    """Return (is_allowed, reason)."""
+    text = (query or "").strip().lower()
+    if not text:
+        return False, "Please enter a non-empty query."
+
+    for category, patterns in SAFETY_BLOCKLIST.items():
+        for pattern in patterns:
+            if re.search(pattern, text):
+                return False, f"Blocked by safety policy: {category}."
+
+    return True, "allowed"
+
 async def report_writer(query : str, search_results : list):
     message = f""" Search term for writing report : {query} \
                 Sources information to be used for writing reports ; {search_results} """
-    INSTRUCTIONS = f""" You are a senior researcher tasked with writing a cohesive report for a research query. 
-                    You will be provided with the original query, and some initial research done by a research assistant.\n
-                    You should first come up with an outline for the report that describes the structure and 
-                    flow of the report. Then, generate the report and return that as your final output.\n
-                    The final output should be in markdown format, and it should be lengthy and detailed. Aim 
-                    for 5-10 pages of content, at least 1000 words. """
+    INSTRUCTIONS = """You are a senior research writer.
+
+        Task:
+        - Use the user query and provided research notes to write a cohesive report.
+        - Internally plan an outline, then produce the final answer directly.
+
+        Output requirements:
+        - Return output in the required ReportData schema.
+        - `short_summary`: 2-3 sentences.
+        - `markdown_report`: well-structured markdown with headings, clear sections, and synthesis across sources.
+        - `follow_up_questions`: practical next research questions.
+        - Target depth around 1000+ words when topic scope justifies it.
+
+        Quality bar:
+        - Be accurate, balanced, and explicit about uncertainty where evidence is weak.
+        - Prefer clear synthesis over copying source phrasing.
+
+        Safety policy:
+        - Do not provide content that facilitates harmful, illegal, exploitative, abusive, or explicit sexual behavior.
+        - Do not provide actionable instructions for wrongdoing.
+        - If topic is unsafe, provide a safety-focused report (risk awareness, legal/ethical context, prevention, and harm reduction) within the same schema."""
 
     writer_agent = Agent(name = "Writer_Agent", model = "gpt-4o-mini", instructions = INSTRUCTIONS, output_type = ReportData)
     report_ = await Runner.run(writer_agent , message)
     report_ = report_.final_output
     return report_
 
-async def circare_main(to_search : str):
+async def circare_main(current_job_id : str):
     #current_datetime = datetime.fromtimestamp()
+    to_search = jobs[current_job_id]['query']
+    is_allowed, reason = evaluate_query_safety(to_search)
+    if not is_allowed:
+        jobs[current_job_id]["status_messages"].append(reason)
+        jobs[current_job_id]["status"] = "Complete"
+        jobs[current_job_id]["report"] = ReportData(
+            short_summary=reason,
+            markdown_report=(
+                "## Request blocked\n\n"
+                "This query cannot be processed due to safety policy.\n\n"
+                "Try a safe alternative topic (education, prevention, legal awareness, ethics)."
+            ),
+            follow_up_questions=[
+                "What are legal and ethical internet research practices?",
+                "How can I improve online safety and digital wellbeing?",
+                "How should harmful online content be reported safely?",
+            ],
+        )
+        return jobs[current_job_id]["report"]
+
+    jobs[current_job_id]['status'] = "Processing"
+    jobs[current_job_id]['status_messages'].append("The search planning has initiated...")
     with trace(f"Circare_Trace"):
         to_search = to_search
         query = f"""query : {to_search}"""
         searches = await search_planner(query)
+        jobs[current_job_id]['status_messages'].append("The search planning has completed...")
+        jobs[current_job_id]['status_messages'].append("The search has been initiated on 3 most relevant keywords...")
         searching = await search_process(searches)
+        jobs[current_job_id]['status_messages'].append("The material has been collected on the relevant keywords")
+        jobs[current_job_id]['status_messages'].append("The report writing has begun")
         report_writing = await report_writer(to_search , searching)
+        jobs[current_job_id]['status_messages'].append("The report writing has been successfully concluded")
+        jobs[current_job_id]['status'] = "Complete"
+        jobs[current_job_id]['report'] = report_writing
         return report_writing
 
