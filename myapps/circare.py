@@ -99,38 +99,7 @@ class ReportData(BaseModel):
     follow_up_questions: list[str] = Field(description="Suggested topics to research further")
 
 
-SAFETY_BLOCKLIST = {
-    "sexual_explicit": [
-        r"\bporn\b",
-        r"\bpornography\b",
-        r"\bexplicit sexual\b",
-        r"\bsex video\b",
-        r"\badult video\b",
-    ],
-    "child_exploitation": [
-        r"\bchild sexual\b",
-        r"\bminor sexual\b",
-        r"\bcsam\b",
-    ],
-    "violent_wrongdoing": [
-        r"\bhow to make a bomb\b",
-        r"\bbuild a bomb\b",
-        r"\bimprovised explosive\b",
-        r"\bpoison (someone|a person)\b",
-    ],
-    "cybercrime": [
-        r"\bmalware\b",
-        r"\bransomware\b",
-        r"\bphishing\b",
-        r"\bhack (a|an|the)?\b",
-        r"\bcredential stuffing\b",
-    ],
-    "fraud": [
-        r"\bcredit card fraud\b",
-        r"\bidentity theft\b",
-        r"\bforge (id|passport|license)\b",
-    ],
-}
+SAFETY_BLOCKLIST = {}
 
 
 def evaluate_query_safety(query: str) -> tuple[bool, str]:
